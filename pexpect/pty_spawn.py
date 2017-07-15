@@ -801,6 +801,75 @@ class spawn(SpawnBase):
                 self.__interact_writen(self.child_fd, data)
 
 
+class NoTTYSpawn(spawn):
+
+    def interact(self, escape_character=chr(29),
+            input_filter=None, output_filter=None):
+        # Flush the buffer.
+        self.write_to_stdout(self.buffer)
+        self.stdout.flush()
+        self.buffer = self.string_type()
+        if escape_character is not None and PY3:
+            escape_character = escape_character.encode('latin-1')
+        self.__interact_copy(escape_character, input_filter, output_filter)
+
+    def __interact_writen(self, fd, data):
+        '''This is used by the interact() method.
+        '''
+
+        while data != b'' and self.isalive():
+            n = os.write(fd, data)
+            data = data[n:]
+
+    def __interact_read(self, fd):
+        '''This is used by the interact() method.
+        '''
+        return os.read(fd, 1000)
+
+    def __interact_copy(self, escape_character=None,
+            input_filter=None, output_filter=None):
+
+        while self.isalive():
+            r, w, e = select_ignore_interrupts([self.child_fd, self.STDIN_FILENO], [], [])
+            if self.child_fd in r:
+                try:
+                    data = self.__interact_read(self.child_fd)
+                except OSError as err:
+                    if err.args[0] == errno.EIO:
+                        # Linux-style EOF
+                        break
+                    raise
+                if data == b'':
+                    # BSD-style EOF
+                    break
+                if output_filter:
+                    data = output_filter(data)
+                self._log(data, 'read')
+                self.stdout.write(data)
+            if self.STDIN_FILENO in r:
+                data = sys.stdin.read(1000)
+                if input_filter:
+                    data = input_filter(data)
+                i = -1
+                if escape_character is not None:
+                    i = data.rfind(escape_character)
+                if i != -1:
+                    data = data[:i]
+                    if data:
+                        self._log(data, 'send')
+                    self.__interact_writen(self.child_fd, data)
+                    break
+                self._log(data, 'send')
+                self.__interact_writen(self.child_fd, data)
+
+
+def jupyter_spawn(*args, **kwargs):
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        return spawn(*args, **kwargs)
+    else:
+        return NoTTYSpawn(*args, **kwargs)
+
+
 def spawnu(*args, **kwargs):
     """Deprecated: pass encoding to spawn() instead."""
     kwargs.setdefault('encoding', 'utf-8')
